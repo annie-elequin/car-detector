@@ -10,6 +10,8 @@ import {
   NativeModules,
   NativeEventEmitter,
   Alert,
+  PermissionsAndroid,
+  Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -23,11 +25,25 @@ function App() {
   const [backgroundStatus, setBackgroundStatus] = useState('Checking...');
 
   useEffect(() => {
-    loadSavedData();
-    checkCurrentConnection();
-    
-    // Listen for Bluetooth connection events
-    const connectListener = bluetoothEmitter.addListener(
+    let connectListener;
+    let disconnectListener;
+    let cancelled = false;
+
+    const boot = async () => {
+      await requestBluetoothPermission();
+      if (cancelled) return;
+      await loadSavedData();
+      if (cancelled) return;
+      await checkCurrentConnection();
+      if (cancelled) return;
+      BluetoothMonitor.isMonitoringEnabled().then(enabled => {
+        setBackgroundStatus(enabled ? 'Active (Foreground Service)' : 'Limited to foreground');
+      });
+    };
+
+    boot();
+
+    connectListener = bluetoothEmitter.addListener(
       'onBluetoothConnected',
       (event) => {
         setCurrentConnection(event.deviceName);
@@ -37,7 +53,7 @@ function App() {
       }
     );
 
-    const disconnectListener = bluetoothEmitter.addListener(
+    disconnectListener = bluetoothEmitter.addListener(
       'onBluetoothDisconnected',
       (event) => {
         if (event.deviceName === savedCarName) {
@@ -47,16 +63,36 @@ function App() {
       }
     );
 
-    // Check if background monitoring is active
-    BluetoothMonitor.isMonitoringEnabled().then(enabled => {
-      setBackgroundStatus(enabled ? 'Active (Foreground Service)' : 'Limited to foreground');
-    });
-
     return () => {
-      connectListener.remove();
-      disconnectListener.remove();
+      cancelled = true;
+      connectListener && connectListener.remove();
+      disconnectListener && disconnectListener.remove();
     };
   }, [savedCarName]);
+
+  const requestBluetoothPermission = async () => {
+    if (Platform.OS !== 'android') return true;
+    if (Platform.Version < 31) return true;
+    try {
+      const result = await PermissionsAndroid.requestMultiple([
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+        PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+      ]);
+      const connect = result[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT];
+      if (connect !== PermissionsAndroid.RESULTS.GRANTED) {
+        Alert.alert(
+          'Bluetooth permission',
+          'Allow Nearby devices for Car Detector, or it cannot see your car connection.',
+        );
+        return false;
+      }
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  };
 
   const loadSavedData = async () => {
     try {
@@ -69,12 +105,25 @@ function App() {
     }
   };
 
-  const checkCurrentConnection = () => {
-    BluetoothMonitor.getCurrentConnection().then(device => {
-      if (device) {
+  const checkCurrentConnection = async () => {
+    try {
+      const device = await BluetoothMonitor.getCurrentConnection();
+      if (device && device.name) {
         setCurrentConnection(device.name);
+      } else {
+        setCurrentConnection(null);
       }
-    }).catch(err => console.error(err));
+    } catch (err) {
+      console.error(err);
+      const msg = (err && (err.message || err.userInfo)) || String(err);
+      if (String(msg).includes('PERMISSION') || String(msg).toLowerCase().includes('permission')) {
+        Alert.alert(
+          'Bluetooth permission',
+          'Allow Nearby devices for Car Detector in Android settings.',
+        );
+      }
+      setCurrentConnection(null);
+    }
   };
 
   const markAsCar = async () => {
@@ -154,6 +203,9 @@ function App() {
               ) : (
                 <Text style={styles.noConnection}>No Bluetooth audio connected</Text>
               )}
+              <TouchableOpacity style={[styles.button, {marginTop: 12}]} onPress={checkCurrentConnection}>
+                <Text style={styles.buttonText}>Refresh</Text>
+              </TouchableOpacity>
             </View>
           </View>
 
