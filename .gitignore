@@ -1,0 +1,24 @@
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Android
+android/build/
+android/app/build/
+android/.gradle/
+android/local.properties
+*.hprof
+*.keystore
+!android/app/debug.keystore
+
+# iOS (not needed but keep for compatibility)
+ios/build/
+ios/Pods/
+*.xcworkspace
+!default.xcworkspace
+
+# Misc
+.DS_Store
+.env
+*.log
