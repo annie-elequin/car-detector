@@ -21,7 +21,8 @@ const bluetoothEmitter = new NativeEventEmitter(BluetoothMonitor);
 function App() {
   const [currentConnection, setCurrentConnection] = useState(null);
   const [savedCarName, setSavedCarName] = useState(null);
-  const [connectionLog, setConnectionLog] = useState([]);
+  const [driveLog, setDriveLog] = useState([]);
+  const [activeDrive, setActiveDrive] = useState(null);
   const [backgroundStatus, setBackgroundStatus] = useState('Checking...');
 
   useEffect(() => {
@@ -47,19 +48,25 @@ function App() {
       'onBluetoothConnected',
       (event) => {
         setCurrentConnection(event.deviceName);
-        if (event.deviceName === savedCarName) {
-          addLogEntry('connected', event.deviceName);
-        }
+        // Check against current saved car and start drive
+        AsyncStorage.getItem('savedCarName').then(savedCar => {
+          if (event.deviceName === savedCar) {
+            startDrive(event.deviceName);
+          }
+        });
       }
     );
 
     disconnectListener = bluetoothEmitter.addListener(
       'onBluetoothDisconnected',
       (event) => {
-        if (event.deviceName === savedCarName) {
-          addLogEntry('disconnected', event.deviceName);
-        }
-        setCurrentConnection(null);
+        // Check against current saved car and end drive
+        AsyncStorage.getItem('savedCarName').then(savedCar => {
+          if (event.deviceName === savedCar) {
+            endDrive(event.deviceName);
+          }
+        });
+        setCurrentConnection(prev => prev === event.deviceName ? null : prev);
       }
     );
 
@@ -68,7 +75,7 @@ function App() {
       connectListener && connectListener.remove();
       disconnectListener && disconnectListener.remove();
     };
-  }, [savedCarName]);
+  }, []);
 
   const requestBluetoothPermission = async () => {
     if (Platform.OS !== 'android') return true;
@@ -97,9 +104,16 @@ function App() {
   const loadSavedData = async () => {
     try {
       const car = await AsyncStorage.getItem('savedCarName');
-      const log = await AsyncStorage.getItem('connectionLog');
-      if (car) setSavedCarName(car);
-      if (log) setConnectionLog(JSON.parse(log));
+      const log = await AsyncStorage.getItem('driveLog');
+      const active = await AsyncStorage.getItem('activeDrive');
+      
+      if (car) {
+        setSavedCarName(car);
+        // Start monitoring if we have a saved car
+        BluetoothMonitor.startMonitoring(car);
+      }
+      if (log) setDriveLog(JSON.parse(log));
+      if (active) setActiveDrive(JSON.parse(active));
     } catch (e) {
       console.error('Failed to load saved data:', e);
     }
@@ -134,34 +148,67 @@ function App() {
     
     await AsyncStorage.setItem('savedCarName', currentConnection);
     setSavedCarName(currentConnection);
-    addLogEntry('connected', currentConnection);
     
     // Start background monitoring
     BluetoothMonitor.startMonitoring(currentConnection);
+    
+    // If currently connected to the car we just marked, start a drive
+    startDrive(currentConnection);
   };
 
   const clearSavedCar = async () => {
     await AsyncStorage.setItem('savedCarName', '');
     setSavedCarName(null);
+    
+    // End any active drive
+    if (activeDrive) {
+      await endDrive(activeDrive.deviceName);
+    }
+    
     BluetoothMonitor.stopMonitoring();
   };
 
-  const addLogEntry = async (event, deviceName) => {
-    const entry = {
+  const startDrive = async (deviceName) => {
+    // Don't start a new drive if one is already active
+    if (activeDrive) return;
+    
+    const drive = {
       id: Date.now(),
-      timestamp: new Date().toISOString(),
-      event,
       deviceName,
+      startTime: new Date().toISOString(),
+      endTime: null,
+      durationMinutes: null,
     };
     
-    const newLog = [entry, ...connectionLog].slice(0, 100); // Keep last 100 entries
-    setConnectionLog(newLog);
-    await AsyncStorage.setItem('connectionLog', JSON.stringify(newLog));
+    setActiveDrive(drive);
+    await AsyncStorage.setItem('activeDrive', JSON.stringify(drive));
+  };
+
+  const endDrive = async (deviceName) => {
+    if (!activeDrive) return;
+    
+    const endTime = new Date().toISOString();
+    const startMs = new Date(activeDrive.startTime).getTime();
+    const endMs = new Date(endTime).getTime();
+    const durationMinutes = Math.round((endMs - startMs) / 1000 / 60);
+    
+    const completedDrive = {
+      ...activeDrive,
+      endTime,
+      durationMinutes,
+    };
+    
+    const newLog = [completedDrive, ...driveLog].slice(0, 100);
+    setDriveLog(newLog);
+    await AsyncStorage.setItem('driveLog', JSON.stringify(newLog));
+    
+    setActiveDrive(null);
+    await AsyncStorage.removeItem('activeDrive');
   };
 
   const clearLog = async () => {
-    setConnectionLog([]);
-    await AsyncStorage.setItem('connectionLog', JSON.stringify([]));
+    setDriveLog([]);
+    await AsyncStorage.setItem('driveLog', JSON.stringify([]));
   };
 
   const formatTimestamp = (isoString) => {
@@ -232,30 +279,41 @@ function App() {
             </View>
           </View>
 
-          {/* Connection Log */}
+          {/* Active Drive */}
+          {activeDrive && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Active Drive</Text>
+              <View style={[styles.card, styles.activeDriveCard]}>
+                <Text style={styles.activeDriveText}>🚗 Driving since {formatTimestamp(activeDrive.startTime)}</Text>
+              </View>
+            </View>
+          )}
+
+          {/* Drive History */}
           <View style={styles.section}>
             <View style={styles.logHeader}>
-              <Text style={styles.sectionTitle}>Connection Log</Text>
-              {connectionLog.length > 0 && (
+              <Text style={styles.sectionTitle}>Drive History</Text>
+              {driveLog.length > 0 && (
                 <TouchableOpacity onPress={clearLog}>
                   <Text style={styles.clearButton}>Clear Log</Text>
                 </TouchableOpacity>
               )}
             </View>
 
-            {connectionLog.length === 0 ? (
+            {driveLog.length === 0 ? (
               <View style={styles.card}>
-                <Text style={styles.noConnection}>No events logged yet</Text>
+                <Text style={styles.noConnection}>No drives logged yet</Text>
               </View>
             ) : (
               <View>
-                {connectionLog.map(entry => (
-                  <View key={entry.id} style={styles.logEntry}>
-                    <Text style={styles.logEvent}>
-                      {entry.event === 'connected' ? '▲' : '▼'} {entry.event === 'connected' ? 'Connected' : 'Disconnected'}
-                    </Text>
-                    <Text style={styles.logDevice}>{entry.deviceName}</Text>
-                    <Text style={styles.logTime}>{formatTimestamp(entry.timestamp)}</Text>
+                {driveLog.map(drive => (
+                  <View key={drive.id} style={styles.logEntry}>
+                    <View style={styles.driveHeader}>
+                      <Text style={styles.driveIcon}>🚗</Text>
+                      <Text style={styles.driveDuration}>{drive.durationMinutes} min</Text>
+                    </View>
+                    <Text style={styles.driveTime}>Started: {formatTimestamp(drive.startTime)}</Text>
+                    <Text style={styles.driveTime}>Ended: {formatTimestamp(drive.endTime)}</Text>
                   </View>
                 ))}
               </View>
@@ -372,19 +430,34 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
     elevation: 1,
   },
-  logEvent: {
+  activeDriveCard: {
+    backgroundColor: '#fff3e0',
+    borderLeftWidth: 4,
+    borderLeftColor: '#ff9800',
+  },
+  activeDriveText: {
     fontSize: 14,
     fontWeight: '600',
-    marginBottom: 4,
+    color: '#e65100',
   },
-  logDevice: {
-    fontSize: 14,
-    color: '#333',
-    marginBottom: 2,
+  driveHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
   },
-  logTime: {
+  driveIcon: {
+    fontSize: 20,
+  },
+  driveDuration: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#2196f3',
+  },
+  driveTime: {
     fontSize: 12,
-    color: '#999',
+    color: '#666',
+    marginBottom: 2,
   },
 });
 

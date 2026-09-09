@@ -24,18 +24,33 @@ gradle wrapper --gradle-version 8.3
 cd ..
 ```
 
-Then:
+### Build Debug APK (Standalone, No Metro Required)
+
+To build a standalone debug APK with the JavaScript bundle included:
 
 ```bash
+# Create assets directory if it doesn't exist
+mkdir -p android/app/src/main/assets
+
+# Bundle the JavaScript and assets
+npx react-native bundle \
+  --platform android \
+  --dev false \
+  --entry-file index.js \
+  --bundle-output android/app/src/main/assets/index.android.bundle \
+  --assets-dest android/app/src/main/res
+
+# Build the APK
 cd android
 ./gradlew assembleDebug
+cd ..
 ```
 
-APK path:
+APK path: `android/app/build/outputs/apk/debug/app-debug.apk`
 
-`android/app/build/outputs/apk/debug/app-debug.apk`
+Install on the phone: `adb install android/app/build/outputs/apk/debug/app-debug.apk`
 
-Install that on the phone (allow unknown apps). Grant Bluetooth and notifications. Disable battery optimization for the app if background monitoring dies.
+Allow unknown apps if installing manually. Grant Bluetooth (Nearby devices) and notification permissions. Disable battery optimization for the app if background monitoring stops working.
 
 ## What this spike tests
 
